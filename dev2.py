@@ -11,5 +11,4 @@ def chat():
             m.append({"role": "assistant", "content": r.choices[0].message.content})
             print(r.choices[0].message.content)
         except: break
-
 chat()
