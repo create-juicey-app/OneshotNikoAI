@@ -1,6 +1,9 @@
 import pygame
 import sys
 import os
+from g4f.client import Client
+import threading
+import random
 
 pygame.init()
 
@@ -41,29 +44,42 @@ TEXT_COLOR = (255, 255, 255)  # White text color
 
 user_input = ""
 window_mode = pygame.NOFRAME
+conversation_history = []
+ai_response = ""  # Initialize ai_response variable
 
 def find_and_replace_faces(text, face_images):
     words = text.split()
     replaced_text = ''
     image_paths = []
+    face_selected = False
     for word in words:
         if word.startswith('[') and word.endswith(']'):
-            face_name = word[1:-1]
+            face_name = word[1:-1].lower()
             if face_name in face_images:
                 image_path = face_images[face_name]
                 replaced_text += ' '
                 image_paths.append(image_path)
+                face_selected = True
             else:
                 replaced_text += word
         else:
             replaced_text += ' ' + word
+    
+    if not face_selected:  # If no face is selected, randomly choose between "niko_5" and "niko_6"
+        if random.random() < 0.5:
+            image_path = face_images["niko5"]
+        else:
+            image_path = face_images["niko6"]
+        replaced_text += ' '
+        image_paths.append(image_path)
+    
     return replaced_text.strip(), image_paths
 
 def play_text_sound():
     pygame.mixer.music.load('./text.wav')
     pygame.mixer.music.play()
 
-def display_text(text_lines, image_paths):
+def display_text(text_lines, image_paths, thinking=False):
     screen.fill(background_color)
     screen.blit(bg_image, (0, 0))
     y_offset = TEXT_Y
@@ -75,6 +91,8 @@ def display_text(text_lines, image_paths):
         blurred_text_surface = pygame.transform.gaussian_blur(text_surface, 1)
         screen.blit(blurred_text_surface, (TEXT_X, y_offset))
         y_offset += font_to_use.get_height()
+
+    
     if image_paths:
         image = pygame.image.load(image_paths[-1])
         screen.blit(image, (496, 16))
@@ -113,14 +131,34 @@ def split_text_into_lines(text):
     lines.append(current_line)
     return lines
 
+def get_ai_response(prompt):
+    c = Client()
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        response = c.chat.completions.create(model="gpt-3.5-turbo", messages=messages).choices[0].message.content
+        return response
+    except Exception as e:
+        print("Error:", e)
+        return ""
+
+def fetch_ai_response(prompt):
+    global ai_response
+    ai_response = get_ai_response(prompt).replace("*", "")
+    # Fetch ai response then remove every "*" from the prompt
+    # to avoid the AI from repeating itself
+
+
+
 def main():
     global user_input
     global window_mode
-    if len(sys.argv) != 2:
-        print("Usage: python dev.py <text>")
-        sys.exit(1)
+    global conversation_history
+    global ai_response
 
-    input_text = sys.argv[1]
+    # Read prompt from ./prompt.txt
+    with open('./prompt.txt', 'r') as file:
+        prompt = file.read()
+
     clock = pygame.time.Clock()
     done = False
 
@@ -133,7 +171,30 @@ def main():
             face_name = os.path.splitext(file_name)[0]
             face_images[face_name] = os.path.join('faces', file_name)
 
-    input_text_with_images, image_paths = find_and_replace_faces(input_text, face_images)
+    # Display "Thinking..." message while waiting for AI response
+    t = threading.Thread(target=fetch_ai_response, args=(prompt,))
+    t.start()
+    thinking = True
+
+    while t.is_alive():
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                done = True
+                break
+        display_text(["Thinking..."], [], thinking=True)
+        pygame.display.flip()
+        clock.tick(30)
+    thinking = False
+
+    if not ai_response:
+        print("Failed to get AI response. Exiting.")
+        sys.exit(1)
+
+    input_text_with_images, image_paths = find_and_replace_faces(ai_response, face_images)
+    conversation_history.append((prompt, ai_response))
+
+    # Flag to indicate if the AI is thinking for the first time
+    first_thinking = True
 
     while not done:
         for event in pygame.event.get():
@@ -150,7 +211,9 @@ def main():
                     if event.key == pygame.K_BACKSPACE:
                         user_input = user_input[:-1]
                     elif event.key == pygame.K_RETURN:
-                        print("User input:", user_input)
+                        conversation_history.append((user_input, ai_response))
+                        ai_response = get_ai_response(user_input)
+                        input_text_with_images, image_paths = find_and_replace_faces(ai_response, face_images)
                         user_input = ""
                     else:
                         user_input += event.unicode
@@ -162,7 +225,12 @@ def main():
             if index % 3 == 0:
                 play_text_sound()
 
-        display_text(text_lines, image_paths)
+        # Display "Thinking..." only for the first time
+        if first_thinking:
+            display_text(["Thinking..."], [], thinking=thinking)
+            first_thinking = False
+        else:
+            display_text(text_lines, image_paths, thinking=thinking)
 
         pygame.display.flip()
         clock.tick(30)
